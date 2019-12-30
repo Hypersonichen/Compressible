@@ -15,7 +15,20 @@ def g_func(s, lam=1.):
     return (1+s.pow(2)).pow(-1.)
     #return (s).pow(-1.)
 
+DEBUG = False
+N_ITER = 5000
 
+LevelSet = False
+CONVECT = False
+DIFFUSE = not(CONVECT)
+
+SDF_INIT = False
+
+SHARPEN = True
+
+RE_INIT = False #True
+N_SUB_ITER = 15
+JST = False
 ###############################################################################
 dtype = torch.DoubleTensor
 
@@ -27,7 +40,7 @@ print("Target Area:", y_target.item())
 
 ###############################################################################
 
-coeff = 25. # 500.*gridSize #default is 20.
+coeff = 25. #*gridSize #default is 20.
 mu_coeff2 = 0.001
 
 #curv_coeff = mu_coeff2**2
@@ -56,9 +69,7 @@ phi_ext = (X)**2+(Y)**2 - np.power(0.25 + noise,2.)
 #phi = (X)**2+(Y)**2 - np.power(2.5, 2.)
 
 
-dt = 5 # learning rate
-#dt = 5 # learning rate
-print("pseudo time step:", dt)
+
 
 
 #phi = Variable(phi)
@@ -90,7 +101,12 @@ phi_ext = skfmm.distance(phi_ext, dx=2.0/(_res-1))
 phi = phi_ext[1:-1,1:-1]
 phi = torch.from_numpy(phi).double()
 
-#phi = (-torch.sigmoid(phi*coeff))+1
+contour_level = 0
+if not(SDF_INIT):
+    phi = (-torch.sigmoid(phi*coeff))+1
+    contour_level = 0.5
+    if SHARPEN:
+        phi = torch.sigmoid((phi-0.5)*coeff)
 
 phi = Variable(phi, requires_grad=True)    
 
@@ -99,19 +115,16 @@ phi = Variable(phi, requires_grad=True)
 
 plt.figure()
 plt.title("Initial Distance")
-cs = plt.contour(xx, yy, phi.detach().numpy(), [0], colors='green', linewidths=(5))
+cs = plt.contour(xx, yy, phi.detach().numpy(), [contour_level], colors='green', linewidths=(5))
 plt.pcolormesh(xx, yy, phi.detach().numpy())
 plt.colorbar()
 
 
-CONVECT = False
-RE_INIT = False
-JST = False
 
 time = []
 history = []
 ##################
-for epoch in range(10):
+for epoch in range(N_ITER):
     
     #plt.figure()
 
@@ -137,31 +150,34 @@ for epoch in range(10):
     lap_phi  = lap_phi.view(temp_idim, temp_jdim)
     lap_sq_phi  = lap_sq_phi.view(temp_idim, temp_jdim)
     
-    if True:
-        dx_layer   = F.conv2d(pMask, kernel_dx, padding=0).double()  #face normal vector should be 1.0 not 0.5
-        dy_layer   = F.conv2d(pMask, kernel_dy, padding=0).double()  #face normal vector  
-        gradient_phi = (torch.mul(dx_layer, dx_layer)+torch.mul(dy_layer, dy_layer)).pow(0.5)
-        #gradient_phi = gradient_phi / gridSize 
 
-        normal_x = torch.mul(dx_layer, gradient_phi.pow(-1.))
-        normal_y = torch.mul(dy_layer, gradient_phi.pow(-1.))
+    dx_layer   = F.conv2d(pMask, kernel_dx, padding=0).double()  #face normal vector should be 1.0 not 0.5
+    dy_layer   = F.conv2d(pMask, kernel_dy, padding=0).double()  #face normal vector  
+    gradient_phi = (torch.mul(dx_layer, dx_layer)+torch.mul(dy_layer, dy_layer)).pow(0.5)
+    #gradient_phi = gradient_phi / gridSize 
+
+    normal_x = torch.mul(dx_layer, gradient_phi.pow(-1.))
+    normal_y = torch.mul(dy_layer, gradient_phi.pow(-1.))
 
 
-        div_normal = F.conv2d(normal_x, kernel_dx, padding=1).double() + F.conv2d(normal_y, kernel_dy, padding=1).double()
+    div_normal = F.conv2d(normal_x, kernel_dx, padding=1).double() + F.conv2d(normal_y, kernel_dy, padding=1).double()
 
-        dx_layer = dx_layer.view(temp_idim, temp_jdim)
-        dy_layer = dy_layer.view(temp_idim, temp_jdim)
-        gradient_phi = gradient_phi.view(temp_idim, temp_jdim)
-        div_normal = div_normal.view(temp_idim, temp_jdim)
-        
+    dx_layer = dx_layer.view(temp_idim, temp_jdim)
+    dy_layer = dy_layer.view(temp_idim, temp_jdim)
+    gradient_phi = gradient_phi.view(temp_idim, temp_jdim)
+    div_normal = div_normal.view(temp_idim, temp_jdim)
+    
+    if DEBUG:    
         plt.figure()
         plt.title("d(phi)/dx")
         plt.imshow(dx_layer.detach().numpy())
         plt.colorbar()
         plt.show()
-       
-    binaryMask = (-torch.sigmoid(phi*coeff))+1
-    
+     
+    if SDF_INIT:
+        binaryMask = (-torch.sigmoid(phi*coeff))+1
+    else:
+        binaryMask = torch.sigmoid((phi-0.5)*coeff)
     
 #    normal_x = normal_x.view(temp_idim, temp_jdim)
 #    normal_y = normal_y.view(temp_idim, temp_jdim)
@@ -207,12 +223,42 @@ for epoch in range(10):
 #        phi.data += (dt * mu_coeff2 * lap_phi/gridSize) #*abs(phi.grad.data) #+ dt * mu_coeff4 * lap_sq_phi/gridSize
 #        #phi.data -= dt * term_curv
 #    else:
-    if True:
+    if CONVECT and LevelSet:
+        K_const = 5#25
+        tau_const = .5
+        tau_const2 = .5
+        convect = gradient_phi
+        phi.data = phi.data - phi.grad.data.mul(gradient_phi) * K_const  + tau_const * lap_phi * gridSize #+ tau_const2 * lap_sq_phi
+    elif DIFFUSE and LevelSet:
         K_const = 25
         tau_const = .5
         tau_const2 = .5
         phi.data = phi.data - phi.grad.data * K_const  + tau_const * lap_phi * gridSize #+ tau_const2 * lap_sq_phi
+    else:
+        kappa = 1e-1 # suggested or try 5e-5
+        eta = .1 # see the tests in the paper 
+        dt = 0.05 # learning rate
+        print("pseudo time step:", dt)
+        term1 = F.conv2d(pMask, laplacian, padding=0).double() 
+        term1 = term1.view(_res,_res)
+        
+        
     
+        
+        #phi = phi.view(_res+2, _res+2)
+        a1 = torch.mul(phi.data,1-phi.data)
+        a2 = phi.data-0.5
+        
+        adv = phi.grad.data
+        adv = torch.div(adv, adv.norm(p=2))
+        #print("Shape of d loss / d field:", adv.shape)
+        a2 = a2 - 30*eta*adv
+        
+        a2 = torch.mul(a1, a2)
+        
+    
+    
+        phi.data = phi.data + (kappa*term1 + a2)*dt
     #phi.grad.data.zero_()
     
     
@@ -227,7 +273,7 @@ for epoch in range(10):
     if RE_INIT:
         phi_temp = phi.data    
         dtau = 1e-3
-        for sub_iter in range(5):
+        for sub_iter in range(N_SUB_ITER):
             ###################################################
             #######   call boundary condition          ########
             ###################################################
@@ -274,8 +320,8 @@ for epoch in range(10):
                 gradient_phi = (torch.mul(dx_layer, dx_layer)+torch.mul(dy_layer, dy_layer)).pow(0.5)
                 #gradient_phi = gradient_phi / gridSize 
         
-                normal_x = dx_layer #torch.mul(dx_layer, gradient_phi.pow(-1.))
-                normal_y = dy_layer #torch.mul(dy_layer, gradient_phi.pow(-1.))
+                normal_x = torch.mul(dx_layer, gradient_phi.pow(-1.))
+                normal_y = torch.mul(dy_layer, gradient_phi.pow(-1.))
         
                 n_dot_dphi = torch.mul(normal_x, dx_layer) + torch.mul(normal_y, dy_layer)
                 
@@ -297,18 +343,20 @@ for epoch in range(10):
             
             #phi.data = phi.data - dtau * torch.tanh(phi_temp*0.5*coeff)*(gradient_phi/gridSize-1.) + term_2 * dtau
     
-            phi.data = phi.data - dtau * (torch.sigmoid(phi_temp*coeff)-0.5)*2*(gradient_phi-1.) #+ term_2 * dtau
+            #phi.data = phi.data - 2 * dtau * (torch.sigmoid(phi_temp*coeff)-0.5).mul(gradient_phi-1.) #+ term_2 * dtau
+            phi.data = phi.data - dtau * torch.sigmoid(coeff*torch.sigmoid(phi_temp*coeff)-0.5).mul(gradient_phi-1.) #+ term_2 * dtau
     
-    plt.figure()
-    plt.title("d(loss)/d(phi)")
-    plt.pcolormesh(xx, yy, phi.grad.data.detach().numpy())
-    plt.colorbar()
+    if DEBUG or epoch==N_ITER-1:
+        plt.figure()
+        plt.title("d(loss)/d(phi)")
+        plt.pcolormesh(xx, yy, phi.grad.data.detach().numpy())
+        plt.colorbar()
 
     phi.grad.data.zero_()
 
 plt.figure()
 plt.title("Phi")
-plt.contour(xx, yy, phi.detach().numpy(), [0], colors='black', linewidths=(0.5))
+plt.contour(xx, yy, phi.detach().numpy(), [contour_level], colors='black', linewidths=(0.5))
 plt.pcolormesh(xx, yy, phi.detach().numpy())
 plt.colorbar()
 plt.gca().set_aspect(1)
@@ -323,18 +371,18 @@ plt.colorbar()
 
 plt.figure()
 plt.title("||grad phi||")
-plt.pcolormesh(xx, yy, gradient_phi.detach().numpy()/gridSize)
+plt.pcolormesh(xx, yy, gradient_phi.detach().numpy())
 plt.colorbar()
 
 plt.figure()
 plt.title("d(phi)/dx")
-plt.pcolormesh(xx, yy, dx_layer.detach().numpy()/gridSize)
+plt.pcolormesh(xx, yy, dx_layer.detach().numpy())
 plt.colorbar()
 
 
 plt.figure()
 plt.title("d(phi)/dy")
-plt.pcolormesh(xx, yy, dy_layer.detach().numpy()/gridSize)
+plt.pcolormesh(xx, yy, dy_layer.detach().numpy())
 plt.colorbar()
     
 plt.figure()
