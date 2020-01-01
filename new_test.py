@@ -1,6 +1,6 @@
 import numpy as np
 import pylab as plt
-
+import math
 import skfmm
 
 import torch
@@ -16,22 +16,22 @@ def g_func(s, lam=1.):
     #return (s).pow(-1.)
 
 DEBUG = False
-N_ITER = 5000
+N_ITER = 8000
 
-LevelSet = False
+LevelSet = True
 CONVECT = False
 DIFFUSE = not(CONVECT)
 
-SDF_INIT = False
+SDF_INIT = True
 
-SHARPEN = True
+SHARPEN = False #True
 
 RE_INIT = False #True
 N_SUB_ITER = 15
 JST = False
 ###############################################################################
 dtype = torch.DoubleTensor
-
+weight = 1e-2 # 0.04 in the paper
 r0 = .5
 y_target = Variable(r0*r0*np.pi*torch.ones(1).type(dtype))
 print("Target Area:", y_target.item())
@@ -40,7 +40,7 @@ print("Target Area:", y_target.item())
 
 ###############################################################################
 
-coeff = 25. #*gridSize #default is 20.
+coeff = 55. #*gridSize #default is 20.
 mu_coeff2 = 0.001
 
 #curv_coeff = mu_coeff2**2
@@ -65,7 +65,7 @@ noise = .05*np.cos(theta*8)
 
 
 
-phi_ext = (X)**2+(Y)**2 - np.power(0.25 + noise,2.)
+phi_ext = (X)**2+(Y)**2 - np.power(0.4 + noise,2.)
 #phi = (X)**2+(Y)**2 - np.power(2.5, 2.)
 
 
@@ -197,8 +197,12 @@ for epoch in range(N_ITER):
 
     y_pred = binaryMask.sum()*gridSize**2
     print(y_pred.item())
-    
-    loss = (y_pred - y_target).pow(2).pow(.5) #+ (gradient_phi.sum()/temp_idim/temp_jdim - 1.)*0.5
+   
+    constraint = 0.5*(gradient_phi - 1.).pow(2.)
+    #constraint = (gradient_phi - 1.).pow(2.).pow(.5)
+
+    #loss = (y_pred - y_target).pow(2).pow(.5) + weight * constraint.sum()
+    loss = (y_pred - y_target).pow(2).pow(.5) + weight * constraint.sum()
     # sum()也是function括号不能丢, 注意在不指定dim=行/列时， 因为加变得没了方向，
     # 所以就是所有元素的加和。
     print(".....loss.....:", loss.data.item())
@@ -230,10 +234,13 @@ for epoch in range(N_ITER):
         convect = gradient_phi
         phi.data = phi.data - phi.grad.data.mul(gradient_phi) * K_const  + tau_const * lap_phi * gridSize #+ tau_const2 * lap_sq_phi
     elif DIFFUSE and LevelSet:
-        K_const = 25
-        tau_const = .5
-        tau_const2 = .5
-        phi.data = phi.data - phi.grad.data * K_const  + tau_const * lap_phi * gridSize #+ tau_const2 * lap_sq_phi
+        K_const =  0.05 #1 #1. #5 #25
+        tau_const = 0.75
+        tau_const2 = 0 #2.5 #.5
+        tau_const *= K_const
+        tau_const2 *= K_const
+        phi.data = phi.data - phi.grad.data * K_const  + tau_const * lap_phi * gridSize + tau_const2 * lap_sq_phi * gridSize**3
+        #phi.data = phi.data - phi.grad.data * K_const  + tau_const * lap_phi + tau_const2 * lap_sq_phi
     else:
         kappa = 1e-1 # suggested or try 5e-5
         eta = .1 # see the tests in the paper 
