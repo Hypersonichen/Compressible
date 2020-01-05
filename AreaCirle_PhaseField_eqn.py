@@ -213,11 +213,15 @@ for it in range(0,N_ITER):
     a2 = field-0.5
     
     adv = field.grad.data
-    adv = torch.div(adv, torch.abs(adv + 1e-28))
+    #adv = torch.div(adv, torch.abs(adv + 1e-28))
+    adv = torch.div(adv, adv.norm(p=2)+1e-28)
     print("Shape of d loss / d field:", adv.shape)
     a2 = a2 - 30*eta*adv
     
     a2 = torch.mul(a1, a2)
+
+
+
     
     if DEBUG or it==N_ITER-1:
         print("Shape of Allen-Cahn Term2:", a2.shape)
