@@ -10,9 +10,20 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 
 from BC_grad_gridSize import BC_grad
+from Binarizer import binarizer
+def Heaviside(x, eps):
+    return 0.5 + 1/np.pi * np.arctan2(x, eps)
+def Dirac_delta(x, eps):
+    return 1/np.pi * eps / (np.power(x,2) + eps*eps)
 
+def torch_Heaviside(x, eps):
+#    eps = torch.from_numpy(eps).double()
+    eps = eps.expand(x.size()[0], x.size()[1])
+    return 0.5 + 1/np.pi * torch.atan2(x, eps)
+def torch_Dirac_delta(x, eps):
+    return 1/np.pi * eps/(x.pow(2.) + eps*eps)
 
-_res = 64
+_res = 128
 #_res = _res+1
 #
 
@@ -27,12 +38,12 @@ DEBUG_IMAGES = False
 restFile = "phi.pt"
 NWRITE = 1000
 
-RESTART   = True
+RESTART   = False
 DYN_DT    = True #False
 WITH_NOISE= False #True
 WITH_SHAPE_TEST= True #False
 ##################False ##############################################################
-N_ITER = 2000
+N_ITER = 1000
 
 
 
@@ -57,8 +68,8 @@ else:
     #phi = (X)**2+(Y)**2/0.16 - np.power(r0,2.) # for rugby shape test (r0=.5)
     phi = (X)**2+(Y)**2 - np.power(r0*0.5,2.)
 
-
-dt = 1e-01 # learning rate
+eps = 0.005
+dt = 1e-02 # learning rate
 #dt = 0.1 # learning rate
 #dt = 0.01 # learning rate
 #dt = 5 # learning rate
@@ -122,9 +133,9 @@ coeff =55. # 500.*gridSize #default is 20.
 
 #mu_coeff2 = 5. #2.25*gridSize ~ 0.07
 #mu_coeff2 = 2.5
-mu_coeff2 = 0.8 #0.2 #0.1 #0.25
+mu_coeff2 = 0 #0.8 #0.2 #0.1 #0.25
 
-mu_coeff_grad = 0.000625 #1e-5 #1e-3
+mu_coeff_grad = 5e-3 #0.000625 #1e-5 #1e-3
 
 plt.figure()
 plt.title("Initial Distance")
@@ -189,21 +200,38 @@ for epoch in range(N_ITER):
     #dy_layer = dy_layer.view(temp_idim, temp_jdim)
 
     gradient_phi = (torch.mul(dx_layer, dx_layer)+torch.mul(dy_layer, dy_layer)).pow(0.5)    
+
+    
+    
+#    diff_rate = 1 - gradient_phi.pow(-1.)
+    diff_rate = torch_Heaviside(gradient_phi - 1., torch.Tensor([1./55.]).double())
+    normal_x = diff_rate.mul(dx_layer)
+    normal_y = diff_rate.mul(dy_layer)
+    div_normal = F.conv2d(normal_x, kernel_dx, padding=1).double() + F.conv2d(normal_y, kernel_dy, padding=1).double()
+    
+
+    
+
     normal_x = torch.div(dx_layer, gradient_phi)
     normal_y = torch.div(dy_layer, gradient_phi)
-
-
-    div_normal = F.conv2d(normal_x, kernel_dx, padding=1).double() + F.conv2d(normal_y, kernel_dy, padding=1).double()
-   
+#    div_normal = F.conv2d(normal_x, kernel_dx, padding=1).double() + F.conv2d(normal_y, kernel_dy, padding=1).double()
+#    div_normal = lap_phi - div_normal    
+    
+    
+    
     dx_layer = dx_layer.view(temp_idim, temp_jdim)
     dy_layer = dy_layer.view(temp_idim, temp_jdim)
     gradient_phi = gradient_phi.view(temp_idim, temp_jdim)
     div_normal = div_normal.view(temp_idim, temp_jdim) 
     normal_x = normal_x.view(temp_idim, temp_jdim)
     normal_y = normal_y.view(temp_idim, temp_jdim)
+    
+    
+    
        
-    binaryMask = (-torch.sigmoid(phi*coeff))+1
-    #binaryMask = binarizer(-phi)
+    #binaryMask = (-torch.sigmoid(phi*coeff))+1
+    DiracMask  = torch_Dirac_delta(-phi, 1/coeff)
+    binaryMask = binarizer(-phi)
     #binaryMask = torch.sigmoid((binaryMask-0.5)*coeff)
     
 
@@ -213,10 +241,10 @@ for epoch in range(N_ITER):
     
 #    constraint = 0.5*(gradient_phi.mul(1-binaryMask) - 1.).pow(2.)
 #    constraint_1 = gradient_phi.mul(1-binaryMask) - 1.
-    constraint = (gradient_phi - 1.).pow(2.).pow(.5)
+    constraint = .5*(y_pred - y_target).pow(2.)
 
-    #loss = (y_pred - y_target).pow(2).pow(.5) + weight * constraint.sum()
-    loss = .5*(y_pred - y_target).pow(2.) + mu_coeff_grad * constraint.sum()
+
+    loss =  constraint 
     #+ lam_grad.mul(constraint_1).sum()
     print("Pred. & Target Areas:", y_pred.item(), y_target.item())
     #loss = (drag)/dynHead + weight * constraint #+ lam_weight * constraint_1 #################################### change here!
@@ -227,11 +255,18 @@ for epoch in range(N_ITER):
 #####################################################################    
 #####################################################################    
 #####################################################################   
-    term_1 = - phi.grad.data.mul( gradient_phi )
-    term_2 =  mu_coeff2 * lap_phi * gridSize * abs(phi.grad.data)
-    #term_grad = mu_coeff_grad * (lap_phi - div_normal)
-    #phi.data = phi.data + (term_1 + term_2 + term_grad)*dt 
-    phi.data = phi.data + (term_1 + term_2)*dt 
+#    term_1 = - phi.grad.data.mul( gradient_phi )
+#    term_2 =  mu_coeff2 * lap_phi * gridSize * abs(phi.grad.data)
+    
+
+    #term_1 = phi.grad.data.mul( DiracMask ) / eps
+    term_1 = -phi.grad.data / eps
+    term_2 = eps * lap_phi
+#    phi.data = phi.data + (term_1 + term_2)*dt 
+
+    term_grad = mu_coeff_grad * div_normal
+    
+    phi.data = phi.data + (term_1 + term_2 + term_grad)*dt 
 
 
 
@@ -270,14 +305,28 @@ for epoch in range(N_ITER):
         plt.contour(X, Y, phi.detach().numpy(), [0], colors='black', linewidths=(0.5))
         plt.pcolormesh(X, Y, phi.grad.data.detach().numpy())
         plt.colorbar()
+        
+        plt.figure()
+        plt.title("binaryMask")
+        plt.contour(X, Y, phi.detach().numpy(), [0], colors='black', linewidths=(0.5))
+        plt.pcolormesh(X, Y, binaryMask.detach().numpy())
+        plt.colorbar()
+        
+        plt.figure()
+        plt.title("DiracMask")
+        plt.contour(X, Y, phi.detach().numpy(), [0], colors='black', linewidths=(0.5))
+        plt.pcolormesh(X, Y, DiracMask.detach().numpy())
+        plt.colorbar()
 
         plt.figure()
         plt.title("term1")
+        plt.contour(X, Y, phi.detach().numpy(), [0], colors='black', linewidths=(0.5))
         plt.pcolormesh(X, Y, term_1.detach().numpy())
         plt.colorbar()
 
         plt.figure()
         plt.title("term2")
+        plt.contour(X, Y, phi.detach().numpy(), [0], colors='black', linewidths=(0.5))
         plt.pcolormesh(X, Y, term_2.detach().numpy())
         plt.colorbar()
 
