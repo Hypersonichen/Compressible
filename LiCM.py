@@ -135,7 +135,7 @@ coeff =55. # 500.*gridSize #default is 20.
 #mu_coeff2 = 2.5
 mu_coeff2 = 0 #0.8 #0.2 #0.1 #0.25
 
-mu_coeff_grad = 5e-3 #0.000625 #1e-5 #1e-3
+mu_coeff_grad = eps*0.1 #1e-3 #0.000625 #1e-5 #1e-3
 
 plt.figure()
 plt.title("Initial Distance")
