@@ -278,10 +278,7 @@ for epoch in range(N_ITER):
     optimizer.step()
     phi.data += (term_2 + term_grad)*dt
     
-    # No more telling PyTorch to let gradients go!
-    # a.grad.zero_()
-    # b.grad.zero_()
-    optimizer.zero_grad()
+
 
 
 
@@ -373,7 +370,10 @@ for epoch in range(N_ITER):
 #####################################################################    
 #####################################################################    
 #####################################################################    
-    phi.grad.data.zero_()
+    # No more telling PyTorch to let gradients go!
+    # a.grad.zero_()
+    # b.grad.zero_()
+    optimizer.zero_grad()
     
 
     
