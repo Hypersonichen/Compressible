@@ -9,7 +9,7 @@ import numpy as np
 import pylab as pyl
 from matplotlib import pyplot as plt
 #import math
-#import skfmm
+import skfmm
 
 ###############################################################################
 import torch
@@ -17,8 +17,8 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 
 ###############################################################################
-from BC_grad import BC_grad #, sign_func
-
+#from BC_grad import BC_grad #, sign_func
+from Binarizer import binarizer
 ###############################################################################
 
 DEBUG = False #True
@@ -29,15 +29,15 @@ gridSize = 2./(_res-1)
 
 dt = 0.1
 kappa = 1e-5 # suggested or try 5e-5
-eta = 0.1 # 0.1, 1, 10, 􏰥0.1, 􏰥1 and 􏰥10.
+eta = 0.1 # see the tests in the paper (0.1 to 10)
 
-coeff = 1000
+coeff = 25
 mu_coeff = 2.5 #.5
 mu_coeff4 = 1./32.    
 
 ###############################################################################
 dtype = torch.DoubleTensor
-r0 = 0.4
+r0 = 0.5
 y_target = Variable(r0*r0*np.pi*torch.ones(1).type(dtype))
 print("Target Area:", y_target.item())
 ###############################################################################
@@ -56,12 +56,12 @@ noise2 = .05*np.cos(theta*2)
 
 #phi = -10*np.ones_like(X,dtype=np.float64)
 #phi[(X)**2+(Y)**2 > 0.25] = 10
-phi = np.power(X,2) + np.power(Y,2) - 0.25 + noise1 + noise2
+phi = np.power(X,2) + np.power(Y,2) - 0.16 + noise1 + noise2
 
 #########################
 #   Initial Condition   #
 #########################
-#phi = skfmm.distance(phi, dx=gridSize)
+phi = skfmm.distance(phi, dx=gridSize)
 
 
 
@@ -77,7 +77,7 @@ kernel_dx = torch.Tensor( [[-1,  0,  1],
 
 laplacian = torch.Tensor( [[ 0,  1,  0],
                            [ 1, -4,  1],
-                           [ 0,  1,  0]] ) * (1/8) / gridSize
+                           [ 0,  1,  0]] ) / gridSize / gridSize
 
 partial_x = torch.Tensor([[-1, 0, 1]] ) * 0.5 / gridSize
 partial_y = torch.Tensor([[-1],
@@ -127,20 +127,23 @@ pyl.yticks()
 
 xie = gridSize*0.5
 
+time = []
+history = []
+
 for it in range(0,N_ITER):
     
-    phi = BC_grad(field)
+    #phi = BC_grad(field)
     
 
-    
-    
-    
+    #binaryMask = torch.sigmoid(phi)*4.325-0.5*4.325
+    binaryMask = binarizer(field - 0.5)
 ###############################################################################
     #phi = torch.clamp(phi, 0.5-xie, 0.5+xie)
-    y_pred = phi.sum()*gridSize**2
+    y_pred = binaryMask.sum()*gridSize**2
+#    y_pred = phi.sum()*gridSize**2
     #y_pred = torch.clamp(phi, 0.5-xie, 0.5+xie).sum()*gridSize**2
     
-    print(y_pred.item())
+    print(y_pred.item(), y_target.item())
     
     loss = (y_pred - y_target).pow(2).pow(.5)
     # sum()也是function括号不能丢, 注意在不指定dim=行/列时， 因为加变得没了方向，
@@ -161,13 +164,18 @@ for it in range(0,N_ITER):
     
     
     
-    phi = phi.view(1,1,_res+2,_res+2)
-    dx_layer   = F.conv2d(phi, kernel_dx, padding=0).double()  #face normal vector should be 1.0 not 0.5
-    dy_layer   = F.conv2d(phi, kernel_dy, padding=0).double()  #face normal vector  
+#    phi = phi.view(1,1,_res+2,_res+2)
+    dx_layer   = F.conv2d(field.view(1,1,_res,_res), kernel_dx, padding=1).double()  #face normal vector should be 1.0 not 0.5
+    dy_layer   = F.conv2d(field.view(1,1,_res,_res), kernel_dy, padding=1).double()  #face normal vector  
     dx_layer = dx_layer.view(_res, _res)
     dy_layer = dy_layer.view(_res, _res)
     
-    gradient_phi = (torch.mul(dx_layer, dx_layer)+torch.mul(dy_layer, dy_layer)).pow(0.5)    
+    gradient_phi = (torch.mul(dx_layer, dx_layer)+torch.mul(dy_layer, dy_layer)).pow(0.5)
+    
+    norm_x = torch.div(dx_layer, gradient_phi)
+    norm_y = torch.div(dy_layer, gradient_phi)
+    
+    
     if DEBUG or it==N_ITER-1:
         pyl.figure()    
         pyl.title("Sobel Operator dphi/dx")
@@ -177,13 +185,23 @@ for it in range(0,N_ITER):
         pyl.xticks()
         pyl.yticks()
         
-        
+        pyl.figure()    
+        pyl.title("Binary Mask")
+        pyl.pcolormesh(X[1:-1,1:-1], Y[1:-1,1:-1], binaryMask.detach().numpy())
+        pyl.colorbar()
+        pyl.gca().set_aspect(1)
+        pyl.xticks()
+        pyl.yticks()       
         
         plt.figure()
         pyl.title("Sobel Operator ||grad phi||")
         plt.imshow(gradient_phi.detach().numpy())
         plt.colorbar()
         
+        plt.figure()
+        pyl.title("Sobel Operator Norm-x")
+        plt.imshow(norm_x.detach().numpy())
+        plt.colorbar()
         
         plt.figure()
         theta2 = torch.atan2(dy_layer, dx_layer+1e-28)
@@ -194,7 +212,7 @@ for it in range(0,N_ITER):
         pyl.yticks()
     
     
-    term1 = F.conv2d(phi, laplacian, padding=0).double() 
+    term1 = F.conv2d(field.view(1,1,_res,_res), laplacian, padding=1).double() 
     term1 = term1.view(_res,_res)
     if DEBUG or it==N_ITER-1:
         plt.figure()
@@ -233,10 +251,19 @@ for it in range(0,N_ITER):
         pyl.xticks()
         pyl.yticks()
 
-
+        plt.figure()
+        plt.title("d loss /d field:")#    
+        pyl.pcolormesh(X[2:-2,2:-2], Y[2:-2,2:-2], field.grad.data.detach().numpy()[1:-1,1:-1])
+        pyl.colorbar()
+        pyl.gca().set_aspect(1)
+        pyl.xticks()
+        pyl.yticks()
 
     field.data = field.data + (kappa*term1 + a2)*dt
     field.grad.data.zero_()
+    
+    time.append(it)
+    history.append(loss.data.item())
     
 pyl.figure()  
 pyl.title("Final field")  
@@ -246,3 +273,8 @@ pyl.colorbar()
 pyl.gca().set_aspect(1)
 pyl.xticks()
 pyl.yticks()
+
+plt.figure()
+plt.title("Loss history")
+plt.plot(time,history)
+plt.show()
